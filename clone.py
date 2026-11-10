@@ -1,7 +1,7 @@
 """Clone published site + optimize to static (no JS)."""
 import asyncio
 from playwright.async_api import async_playwright
-import pathlib, os, re, urllib.request, io, urllib.parse
+import pathlib, os, re, urllib.request, io, urllib.parse, shutil, subprocess
 from bs4 import BeautifulSoup
 from PIL import Image
 
@@ -29,20 +29,49 @@ async def grab_html():
         )
         page = await c.new_page()
         print(f"Navigating to {TARGET}...")
-        await page.goto(TARGET, wait_until="domcontentloaded", timeout=60000)
+        wait_until = "networkidle" if MODE == "js" else "domcontentloaded"
+        try:
+            await page.goto(TARGET, wait_until=wait_until, timeout=60000)
+        except Exception as e:
+            print(f"  goto warning: {e}")
         await page.mouse.move(100, 100)
         await page.mouse.move(500, 500)
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(3000)
         if MARKER_TEXT:
             try:
-                await page.wait_for_selector(f"text={MARKER_TEXT}", timeout=30000)
+                await page.wait_for_selector(f"text={MARKER_TEXT}", timeout=15000)
             except Exception:
                 pass
         html = await page.content()
         await b.close()
         return html
 
+def run_wget():
+    print("=== Wget mode ===")
+    domain = urllib.parse.urlparse(TARGET).netloc
+    subprocess.run(["wget", "-p", "-k", "-E", "--no-parent", "-P", "site", TARGET], check=True)
+    site_dir = pathlib.Path("site") / domain
+    if site_dir.exists():
+        for item in site_dir.iterdir():
+            shutil.move(str(item), str(pathlib.Path(".") / item.name))
+    shutil.rmtree("site", ignore_errors=True)
+    pathlib.Path(".nojekyll").touch()
+    print("  wget done")
+
+def run_singlefile():
+    print("=== SingleFile mode ===")
+    subprocess.run(["single-file", TARGET, "index.html"], check=True)
+    pathlib.Path(".nojekyll").touch()
+    print("  singlefile done")
+
 async def main():
+    if MODE == "wget":
+        run_wget()
+        return
+    if MODE == "singlefile":
+        run_singlefile()
+        return
+
     print(f"=== Clone {TARGET} (MODE={MODE}) ===")
     html = await grab_html()
     soup = BeautifulSoup(html, "html.parser")
@@ -52,15 +81,19 @@ async def main():
         for s in soup.find_all("script"): s.decompose()
         for a in soup.find_all("a", attrs={"data-id": "made-with-gamma-btn"}): a.decompose()
         for m in soup.find_all("meta", attrs={"name": "robots"}): m.decompose()
-        
+
         st = soup.new_tag("style"); st["id"] = "no-js-visibility"
         st.string = ".animatable-on-load,.animatable-on-load-accent,.animatable-on-load-atom{opacity:1!important;transform:none!important;visibility:visible!important}"
         if soup.head: soup.head.append(st)
-    else:
-        print("=== Universal mode: keep structure, strip JS ===")
-        # В универсальном режиме мы тоже удаляем JS (чтобы сайт был статичным),
-        # но НЕ удаляем CSS и не ломаем структуру.
-        for s in soup.find_all("script"): s.decompose()
+    elif MODE == "js":
+        print("=== JS mode: keep scripts, wait networkidle ===")
+        # Удаляем только трекеры
+        trackers = ['google-analytics.com', 'googletagmanager.com', 'mc.yandex.ru', 'top-fwz1.mail.ru']
+        for s in soup.find_all("script"):
+            if s.get("src") and any(t in s.get("src") for t in trackers):
+                s.decompose()
+            elif s.string and any(t in s.string for t in ['yaCounter', 'gtag', 'ym(']):
+                s.decompose()
 
     os.makedirs("assets/images", exist_ok=True)
     os.makedirs("assets/css", exist_ok=True)
@@ -72,7 +105,7 @@ async def main():
             href = link.get("href", "")
             if href:
                 try:
-                    data, final_url = fetch(href, TARGET)
+                    data, _ = fetch(href, TARGET)
                     css_count += 1
                     name = f"style_{css_count:02d}.css"
                     path = f"assets/css/{name}"
@@ -89,7 +122,7 @@ async def main():
         src = img.get("src", "")
         if not src or "data:" in src: continue
         try:
-            data, final_url = fetch(src, TARGET)
+            data, _ = fetch(src, TARGET)
             im = Image.open(io.BytesIO(data))
             if im.mode in ("RGBA", "LA", "P"):
                 bg = Image.new("RGB", im.size, (255, 255, 255))
@@ -109,7 +142,6 @@ async def main():
         except Exception as e:
             print(f"  fail img {src[:50]}: {e}")
 
-    # Очистка неиспользуемых внешних preload и стилей
     for l in soup.find_all("link"):
         if l.get("rel") == ["preload"] and l.get("href", "").startswith("http"):
             l.decompose()
