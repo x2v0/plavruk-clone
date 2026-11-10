@@ -25,6 +25,7 @@ jobs:
           MARKER_TEXT: ${{ vars.MARKER_TEXT }}
           MAX_EDGE: ${{ vars.MAX_EDGE || '1200' }}
           QUALITY: ${{ vars.QUALITY || '78' }}
+          MODE: ${{ vars.MODE || 'gamma' }}
         run: xvfb-run --auto-servernum python3 clone.py
       - name: Commit and push
         run: |
