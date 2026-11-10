@@ -1,0 +1,52 @@
+name: Clone Site
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'URL сайта (published site или любой другой)'
+        required: true
+        type: string
+      marker_text:
+        description: 'Текст для ожидания загрузки (опционально)'
+        required: false
+        type: string
+      max_edge:
+        description: 'Максимальная сторона изображения (px)'
+        required: false
+        default: '1200'
+      quality:
+        description: 'Качество WebP (0-100)'
+        required: false
+        default: '78'
+
+jobs:
+  clone:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install playwright beautifulsoup4 Pillow
+          python -m playwright install chromium --with-deps
+      - name: Run clone script
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          MARKER_TEXT: ${{ github.event.inputs.marker_text }}
+          MAX_EDGE: ${{ github.event.inputs.max_edge }}
+          QUALITY: ${{ github.event.inputs.quality }}
+        run: xvfb-run --auto-servernum python3 clone.py
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Auto-clone: ${{ github.event.inputs.target_url }}" || echo "no changes"
+          git push
